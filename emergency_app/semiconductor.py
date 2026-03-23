@@ -22,38 +22,22 @@ SEMICONDUCTOR_INCIDENT_TYPES = [
 ]
 
 ROLE_PERMISSIONS = {
-    "系统管理员": ["场景配置", "指挥动作", "点名修正", "通信记录", "用户管理", "ALOHA工作台"],
+    "系统管理员": ["场景配置", "指挥动作", "点名修正", "通信记录", "ALOHA工作台"],
     "指挥官": ["场景配置", "指挥动作", "点名修正", "通信记录", "ALOHA工作台"],
     "EHS值守": ["指挥动作", "点名修正", "通信记录", "ALOHA工作台"],
     "观察员": ["查看态势"],
 }
 
+PRIMARY_ACCOUNT_USERNAME = "admin"
+PRIMARY_ACCOUNT_DISPLAY_NAME = "系统值守"
+PRIMARY_ACCOUNT_ROLE = "系统管理员"
+PRIMARY_ACCOUNT_PASSWORD = "ERCCommand#2026!"
+
 DEFAULT_USER_ACCOUNTS = [
     {
-        "username": "admin",
-        "display_name": "系统管理员",
-        "role": "系统管理员",
-        "password_hash": "",
-        "active": True,
-    },
-    {
-        "username": "commander",
-        "display_name": "厂级总指挥",
-        "role": "指挥官",
-        "password_hash": "",
-        "active": True,
-    },
-    {
-        "username": "ehs",
-        "display_name": "EHS 值守",
-        "role": "EHS值守",
-        "password_hash": "",
-        "active": True,
-    },
-    {
-        "username": "viewer",
-        "display_name": "访客查看",
-        "role": "观察员",
+        "username": PRIMARY_ACCOUNT_USERNAME,
+        "display_name": PRIMARY_ACCOUNT_DISPLAY_NAME,
+        "role": PRIMARY_ACCOUNT_ROLE,
         "password_hash": "",
         "active": True,
     },
@@ -907,31 +891,44 @@ def hash_user_password(password: str) -> str:
 
 
 def build_default_user_accounts() -> list[dict[str, str | bool]]:
-    defaults: list[dict[str, str | bool]] = []
-    seed_passwords = {
-        "admin": "ERCAdmin#2026!",
-        "commander": "ERCCommander#2026!",
-        "ehs": "ERCEHS#2026!",
-        "viewer": "ERCViewer#2026!",
-    }
-    for account in DEFAULT_USER_ACCOUNTS:
-        defaults.append(
-            {
-                **account,
-                "password_hash": hash_user_password(seed_passwords[str(account["username"])]),
-            }
-        )
-    return defaults
+    return [
+        {
+            **DEFAULT_USER_ACCOUNTS[0],
+            "password_hash": hash_user_password(PRIMARY_ACCOUNT_PASSWORD),
+        }
+    ]
 
 
 def get_role_permissions(role: str) -> list[str]:
     return ROLE_PERMISSIONS.get(role, ["查看态势"])
 
 
+def normalize_single_account_accounts(accounts: list[dict[str, str | bool]]) -> list[dict[str, str | bool]]:
+    default_account = dict(build_default_user_accounts()[0])
+    existing = next(
+        (
+            dict(account)
+            for account in accounts
+            if str(account.get("username", "")).lower() == PRIMARY_ACCOUNT_USERNAME
+        ),
+        None,
+    )
+    if existing:
+        default_account["display_name"] = str(existing.get("display_name") or PRIMARY_ACCOUNT_DISPLAY_NAME)
+        default_account["password_hash"] = str(existing.get("password_hash") or default_account["password_hash"])
+        default_account["active"] = bool(existing.get("active", True))
+    return [default_account]
+
+
 def load_user_accounts(file_path: str | Path) -> list[dict[str, str | bool]]:
     path = Path(file_path)
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        accounts = payload if isinstance(payload, list) else build_default_user_accounts()
+        normalized = normalize_single_account_accounts(accounts)
+        if accounts != normalized:
+            path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+        return normalized
 
     path.parent.mkdir(parents=True, exist_ok=True)
     defaults = build_default_user_accounts()
@@ -942,7 +939,8 @@ def load_user_accounts(file_path: str | Path) -> list[dict[str, str | bool]]:
 def save_user_accounts(file_path: str | Path, accounts: list[dict[str, str | bool]]) -> None:
     path = Path(file_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(accounts, ensure_ascii=False, indent=2), encoding="utf-8")
+    normalized = normalize_single_account_accounts(accounts)
+    path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def authenticate_user(

@@ -63,79 +63,67 @@ def test_classify_semiconductor_response_level_thresholds() -> None:
 
 
 def test_hash_user_password_is_stable() -> None:
-    assert hash_user_password("ERCAdmin#2026!") == hash_user_password("ERCAdmin#2026!")
-    assert hash_user_password("ERCAdmin#2026!") != hash_user_password("ERCViewer#2026!")
+    assert hash_user_password("ERCCommand#2026!") == hash_user_password("ERCCommand#2026!")
+    assert hash_user_password("ERCCommand#2026!") != hash_user_password("AnotherPassword#2026!")
 
 
 def test_load_user_accounts_creates_defaults(tmp_path: Path) -> None:
     accounts_path = tmp_path / "users.json"
     accounts = load_user_accounts(accounts_path)
     assert accounts_path.exists()
-    assert {str(account["username"]) for account in accounts} == {"admin", "commander", "ehs", "viewer"}
+    assert {str(account["username"]) for account in accounts} == {"admin"}
 
 
 def test_authenticate_user_accepts_active_account() -> None:
     accounts = build_default_user_accounts()
-    user = authenticate_user(accounts, username="admin", password="ERCAdmin#2026!")
+    user = authenticate_user(accounts, username="admin", password="ERCCommand#2026!")
     assert user is not None
     assert user["role"] == "系统管理员"
 
 
 def test_authenticate_user_rejects_inactive_account() -> None:
     accounts = set_user_active_status(build_default_user_accounts(), "admin", active=False)
-    user = authenticate_user(accounts, username="admin", password="ERCAdmin#2026!")
+    user = authenticate_user(accounts, username="admin", password="ERCCommand#2026!")
     assert user is None
 
 
-def test_upsert_user_account_updates_existing_password_and_role() -> None:
+def test_upsert_user_account_updates_existing_primary_account() -> None:
     accounts = build_default_user_accounts()
     updated = upsert_user_account(
         accounts,
-        username="ehs",
-        display_name="EHS 夜班",
-        role="指挥官",
+        username="admin",
+        display_name="总控值守",
+        role="系统管理员",
         password="Updated@2026",
         active=True,
     )
-    user = authenticate_user(updated, username="ehs", password="Updated@2026")
+    user = authenticate_user(updated, username="admin", password="Updated@2026")
     assert user is not None
-    assert user["display_name"] == "EHS 夜班"
-    assert user["role"] == "指挥官"
+    assert user["display_name"] == "总控值守"
+    assert user["role"] == "系统管理员"
 
 
-def test_upsert_user_account_appends_new_account() -> None:
-    accounts = build_default_user_accounts()
-    updated = upsert_user_account(
-        accounts,
-        username="shiftlead",
-        display_name="值班长",
-        role="指挥官",
-        password="ShiftLead@2026",
-        active=True,
-    )
-    assert authenticate_user(updated, username="shiftlead", password="ShiftLead@2026") is not None
-
-
-def test_save_user_accounts_roundtrip(tmp_path: Path) -> None:
+def test_save_user_accounts_roundtrip_keeps_single_primary_account(tmp_path: Path) -> None:
     accounts_path = tmp_path / "users.json"
     accounts = upsert_user_account(
         build_default_user_accounts(),
-        username="observer2",
-        display_name="观察员二号",
+        username="guest",
+        display_name="访客账号",
         role="观察员",
         password="Observer@2026",
         active=False,
     )
     save_user_accounts(accounts_path, accounts)
     reloaded = load_user_accounts(accounts_path)
-    assert any(str(account["username"]) == "observer2" and not bool(account["active"]) for account in reloaded)
+    assert len(reloaded) == 1
+    assert str(reloaded[0]["username"]) == "admin"
 
 
 def test_build_user_role_matrix_contains_permissions_column() -> None:
     matrix = build_user_role_matrix(build_default_user_accounts())
     assert list(matrix.columns) == ["账号", "姓名", "角色", "状态", "权限"]
     admin_row = matrix[matrix["账号"] == "admin"].iloc[0]
-    assert "用户管理" in str(admin_row["权限"])
+    assert "场景配置" in str(admin_row["权限"])
 
 
 def test_build_semiconductor_resource_board_has_valid_ratios() -> None:

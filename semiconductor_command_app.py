@@ -1942,9 +1942,9 @@ def render_login_gate() -> tuple[list[dict[str, str | bool]], dict[str, str | bo
     st.markdown(
         """
         <div class="hero">
-          <div class="hero-kicker">User Access Control</div>
+          <div class="hero-kicker">Single Account Access</div>
           <div class="hero-title">半导体应急指挥系统登录</div>
-          <div class="hero-subtitle">系统已启用用户管理。请先登录后再进入指挥席、点名、ALOHA 和用户管理模块。</div>
+          <div class="hero-subtitle">系统当前使用单账号登录。请先输入授权账号和密码，再进入指挥席、点名、ALOHA 和通信模块。</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1955,7 +1955,7 @@ def render_login_gate() -> tuple[list[dict[str, str | bool]], dict[str, str | bo
             """
             <div class="card-light">
               <div class="section-title">登录</div>
-              <div class="section-subtitle">默认演示账号已启用，你也可以用管理员登录后在系统里继续新增角色与账号。</div>
+              <div class="section-subtitle">当前系统只保留一个授权账号，页面不会展示账号密码。</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1989,48 +1989,6 @@ def render_user_management_panel(
     accounts: list[dict[str, str | bool]],
     current_user: dict[str, str | bool],
 ) -> list[dict[str, str | bool]]:
-    role = str(current_user["role"])
-    if "用户管理" not in get_role_permissions(role):
-        return accounts
-
-    st.markdown('<div class="sidebar-heading">用户管理</div>', unsafe_allow_html=True)
-    user_matrix = build_user_role_matrix(accounts)
-    st.dataframe(user_matrix, use_container_width=True, hide_index=True)
-
-    with st.expander("新增 / 更新账号", expanded=False):
-        with st.form("semi-user-upsert"):
-            username = st.text_input("账号名")
-            display_name = st.text_input("姓名 / 显示名")
-            user_role = st.selectbox("角色", ["系统管理员", "指挥官", "EHS值守", "观察员"])
-            password = st.text_input("密码", type="password")
-            active = st.toggle("启用账号", value=True)
-            submitted = st.form_submit_button("保存账号", use_container_width=True)
-            if submitted:
-                accounts = upsert_user_account(
-                    accounts,
-                    username=username,
-                    display_name=display_name,
-                    role=user_role,
-                    password=password or None,
-                    active=active,
-                )
-                save_user_accounts(USER_ACCOUNTS_PATH, accounts)
-                st.success("账号已保存。")
-                st.rerun()
-
-    with st.expander("启用 / 停用账号", expanded=False):
-        candidate_usernames = [str(account["username"]) for account in accounts if str(account["username"]) != str(current_user["username"])]
-        if not candidate_usernames:
-            st.caption("当前没有可调整状态的其他账号。")
-        else:
-            target_username = st.selectbox("选择账号", candidate_usernames)
-            active_choice = st.radio("账号状态", ["启用", "停用"], horizontal=True)
-            if st.button("更新账号状态", use_container_width=True):
-                accounts = set_user_active_status(accounts, target_username, active=(active_choice == "启用"))
-                save_user_accounts(USER_ACCOUNTS_PATH, accounts)
-                st.success("账号状态已更新。")
-                st.rerun()
-
     return accounts
 
 
