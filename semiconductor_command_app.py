@@ -937,8 +937,6 @@ def trigger_command_action(action_key: str, title: str, detail: str, sender: str
     if action_key not in enabled:
         enabled.append(action_key)
     st.session_state["semi_enabled_actions"] = enabled
-    add_action_feed(title, detail)
-    add_log_entry("调度", sender, detail)
 
 
 def render_command_button(
@@ -976,8 +974,6 @@ def set_active_stage(stage_name: str, sender: str) -> None:
     if stage_name == current_stage:
         return
     st.session_state["semi_current_stage"] = stage_name
-    add_action_feed("切换 BCM 阶段", f"当前 BCM 阶段已切换至 {stage_name}。")
-    add_log_entry("调度", sender, f"当前 BCM 阶段已切换至 {stage_name}。")
 
 
 def render_stage_action_bar(stage_order: list[str], active_stage: str, sender: str, *, allow_change: bool) -> None:
@@ -1911,7 +1907,6 @@ def render_alert_cards(alerts: pd.DataFrame, *, allow_ack: bool) -> None:
             if st.button("确认", key=f"ack-{row.告警ID}", use_container_width=True, disabled=not allow_ack):
                 acked.add(row.告警ID)
                 st.session_state["semi_ack_alerts"] = sorted(acked)
-                add_action_feed("确认告警", f"{row.标题} 已由指挥席确认。")
                 st.rerun()
 
 
@@ -2361,14 +2356,8 @@ triggered_items.extend(
         for index, row in enumerate(gms_sensor_board.head(2).itertuples(index=False))
     ]
 )
-triggered_items.extend(
-    [
-        {"text": f"{item['动作']}：{item['说明']}", "is_new": index == 0}
-        for index, item in enumerate(st.session_state.get("semi_action_feed", [])[:2])
-    ]
-)
 if not triggered_items:
-    triggered_items = [{"text": "当前事件已触发：系统监看中，等待新的告警或指挥动作。", "is_new": True}]
+    triggered_items = [{"text": "当前事件已触发：系统监看中，等待新的告警或 GMS 变化。", "is_new": True}]
 
 init_log_state(level=level, incident_type=incident_type, commander=commander, fab_name=fab_name)
 
@@ -2420,7 +2409,7 @@ with trigger_cols[2]:
 with trigger_cols[3]:
     render_kpi_card("点名失联", str(rollcall_missing), "二次点名、badge 与集合点仍需闭环")
 
-render_section_head("当前事件已触发", "滚动显示当前告警、GMS 读值和最新指挥动作；页面会自动刷新。")
+render_section_head("当前事件已触发", "滚动显示当前告警和 GMS 读值；页面会自动刷新。")
 render_event_ticker(triggered_items)
 
 status_cols = st.columns(4)
