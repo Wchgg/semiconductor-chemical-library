@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -16,6 +19,44 @@ SEMICONDUCTOR_INCIDENT_TYPES = [
     "暴雨天气",
     "台风天气",
     "漏水事件",
+]
+
+ROLE_PERMISSIONS = {
+    "系统管理员": ["场景配置", "指挥动作", "点名修正", "通信记录", "用户管理", "ALOHA工作台"],
+    "指挥官": ["场景配置", "指挥动作", "点名修正", "通信记录", "ALOHA工作台"],
+    "EHS值守": ["指挥动作", "点名修正", "通信记录", "ALOHA工作台"],
+    "观察员": ["查看态势"],
+}
+
+DEFAULT_USER_ACCOUNTS = [
+    {
+        "username": "admin",
+        "display_name": "系统管理员",
+        "role": "系统管理员",
+        "password_hash": "",
+        "active": True,
+    },
+    {
+        "username": "commander",
+        "display_name": "厂级总指挥",
+        "role": "指挥官",
+        "password_hash": "",
+        "active": True,
+    },
+    {
+        "username": "ehs",
+        "display_name": "EHS 值守",
+        "role": "EHS值守",
+        "password_hash": "",
+        "active": True,
+    },
+    {
+        "username": "viewer",
+        "display_name": "访客查看",
+        "role": "观察员",
+        "password_hash": "",
+        "active": True,
+    },
 ]
 
 TAIWAN_FAB_SITES = {
@@ -859,6 +900,124 @@ def build_reference_supplements() -> dict[str, list[str]]:
 
 def get_taiwan_fab_sites() -> dict[str, dict[str, float | str]]:
     return TAIWAN_FAB_SITES
+
+
+def hash_user_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def build_default_user_accounts() -> list[dict[str, str | bool]]:
+    defaults: list[dict[str, str | bool]] = []
+    seed_passwords = {
+        "admin": "Admin@2026",
+        "commander": "Commander@2026",
+        "ehs": "EHS@2026",
+        "viewer": "Viewer@2026",
+    }
+    for account in DEFAULT_USER_ACCOUNTS:
+        defaults.append(
+            {
+                **account,
+                "password_hash": hash_user_password(seed_passwords[str(account["username"])]),
+            }
+        )
+    return defaults
+
+
+def get_role_permissions(role: str) -> list[str]:
+    return ROLE_PERMISSIONS.get(role, ["查看态势"])
+
+
+def load_user_accounts(file_path: str | Path) -> list[dict[str, str | bool]]:
+    path = Path(file_path)
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    defaults = build_default_user_accounts()
+    path.write_text(json.dumps(defaults, ensure_ascii=False, indent=2), encoding="utf-8")
+    return defaults
+
+
+def save_user_accounts(file_path: str | Path, accounts: list[dict[str, str | bool]]) -> None:
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(accounts, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def authenticate_user(
+    accounts: list[dict[str, str | bool]],
+    username: str,
+    password: str,
+) -> dict[str, str | bool] | None:
+    normalized = username.strip().lower()
+    password_hash = hash_user_password(password)
+    for account in accounts:
+        if str(account["username"]).lower() == normalized and bool(account["active"]):
+            if str(account["password_hash"]) == password_hash:
+                return account
+    return None
+
+
+def upsert_user_account(
+    accounts: list[dict[str, str | bool]],
+    username: str,
+    display_name: str,
+    role: str,
+    password: str | None = None,
+    active: bool = True,
+) -> list[dict[str, str | bool]]:
+    updated = [dict(account) for account in accounts]
+    normalized = username.strip().lower()
+    for account in updated:
+        if str(account["username"]).lower() == normalized:
+            account["display_name"] = display_name.strip() or normalized
+            account["role"] = role
+            account["active"] = bool(active)
+            if password:
+                account["password_hash"] = hash_user_password(password)
+            return updated
+
+    updated.append(
+        {
+            "username": normalized,
+            "display_name": display_name.strip() or normalized,
+            "role": role,
+            "password_hash": hash_user_password(password or "ChangeMe@2026"),
+            "active": bool(active),
+        }
+    )
+    return updated
+
+
+def set_user_active_status(
+    accounts: list[dict[str, str | bool]],
+    username: str,
+    active: bool,
+) -> list[dict[str, str | bool]]:
+    updated = [dict(account) for account in accounts]
+    normalized = username.strip().lower()
+    for account in updated:
+        if str(account["username"]).lower() == normalized:
+            account["active"] = bool(active)
+            break
+    return updated
+
+
+def build_user_role_matrix(accounts: list[dict[str, str | bool]]) -> pd.DataFrame:
+    rows = []
+    for account in accounts:
+        role = str(account["role"])
+        rows.append(
+            (
+                str(account["username"]),
+                str(account["display_name"]),
+                role,
+                "启用" if bool(account["active"]) else "停用",
+                " / ".join(get_role_permissions(role)),
+            )
+        )
+    return pd.DataFrame(rows, columns=["账号", "姓名", "角色", "状态", "权限"])
 
 
 def build_chemical_ghs_profile(chemical_name: str) -> dict[str, str | list[str]]:

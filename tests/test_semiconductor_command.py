@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from emergency_app.semiconductor import (
     apply_rollcall_override,
+    authenticate_user,
     build_aloha_quick_estimate,
     build_badge_audit_board,
     build_chemical_ghs_profile,
+    build_default_user_accounts,
     build_incident_control_profile,
     build_gms_sensor_board,
     build_monitoring_interface_board,
@@ -21,6 +25,7 @@ from emergency_app.semiconductor import (
     build_sop_execution_board,
     build_semiconductor_task_board,
     build_taiwan_bcm_stage_board,
+    build_user_role_matrix,
     build_semiconductor_wip_board,
     build_semiconductor_zone_status,
     calculate_semiconductor_risk_score,
@@ -29,6 +34,11 @@ from emergency_app.semiconductor import (
     get_checklist_name_for_incident,
     get_process_name_for_incident,
     get_taiwan_fab_sites,
+    hash_user_password,
+    load_user_accounts,
+    save_user_accounts,
+    set_user_active_status,
+    upsert_user_account,
 )
 
 
@@ -50,6 +60,82 @@ def test_classify_semiconductor_response_level_thresholds() -> None:
     assert classify_semiconductor_response_level(60) == "厂级III级"
     assert classify_semiconductor_response_level(75) == "厂级II级"
     assert classify_semiconductor_response_level(92) == "厂级I级"
+
+
+def test_hash_user_password_is_stable() -> None:
+    assert hash_user_password("Admin@2026") == hash_user_password("Admin@2026")
+    assert hash_user_password("Admin@2026") != hash_user_password("Viewer@2026")
+
+
+def test_load_user_accounts_creates_defaults(tmp_path: Path) -> None:
+    accounts_path = tmp_path / "users.json"
+    accounts = load_user_accounts(accounts_path)
+    assert accounts_path.exists()
+    assert {str(account["username"]) for account in accounts} == {"admin", "commander", "ehs", "viewer"}
+
+
+def test_authenticate_user_accepts_active_account() -> None:
+    accounts = build_default_user_accounts()
+    user = authenticate_user(accounts, username="admin", password="Admin@2026")
+    assert user is not None
+    assert user["role"] == "系统管理员"
+
+
+def test_authenticate_user_rejects_inactive_account() -> None:
+    accounts = set_user_active_status(build_default_user_accounts(), "admin", active=False)
+    user = authenticate_user(accounts, username="admin", password="Admin@2026")
+    assert user is None
+
+
+def test_upsert_user_account_updates_existing_password_and_role() -> None:
+    accounts = build_default_user_accounts()
+    updated = upsert_user_account(
+        accounts,
+        username="ehs",
+        display_name="EHS 夜班",
+        role="指挥官",
+        password="Updated@2026",
+        active=True,
+    )
+    user = authenticate_user(updated, username="ehs", password="Updated@2026")
+    assert user is not None
+    assert user["display_name"] == "EHS 夜班"
+    assert user["role"] == "指挥官"
+
+
+def test_upsert_user_account_appends_new_account() -> None:
+    accounts = build_default_user_accounts()
+    updated = upsert_user_account(
+        accounts,
+        username="shiftlead",
+        display_name="值班长",
+        role="指挥官",
+        password="ShiftLead@2026",
+        active=True,
+    )
+    assert authenticate_user(updated, username="shiftlead", password="ShiftLead@2026") is not None
+
+
+def test_save_user_accounts_roundtrip(tmp_path: Path) -> None:
+    accounts_path = tmp_path / "users.json"
+    accounts = upsert_user_account(
+        build_default_user_accounts(),
+        username="observer2",
+        display_name="观察员二号",
+        role="观察员",
+        password="Observer@2026",
+        active=False,
+    )
+    save_user_accounts(accounts_path, accounts)
+    reloaded = load_user_accounts(accounts_path)
+    assert any(str(account["username"]) == "observer2" and not bool(account["active"]) for account in reloaded)
+
+
+def test_build_user_role_matrix_contains_permissions_column() -> None:
+    matrix = build_user_role_matrix(build_default_user_accounts())
+    assert list(matrix.columns) == ["账号", "姓名", "角色", "状态", "权限"]
+    admin_row = matrix[matrix["账号"] == "admin"].iloc[0]
+    assert "用户管理" in str(admin_row["权限"])
 
 
 def test_build_semiconductor_resource_board_has_valid_ratios() -> None:

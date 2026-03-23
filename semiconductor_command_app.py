@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from textwrap import dedent
 
 import pandas as pd
@@ -11,11 +12,13 @@ from streamlit_autorefresh import st_autorefresh
 
 from emergency_app.semiconductor import (
     apply_rollcall_override,
+    authenticate_user,
     SEMICONDUCTOR_INCIDENT_TYPES,
     build_aloha_quick_estimate,
     build_badge_audit_board,
     build_chemical_ghs_profile,
     build_cross_fab_support_board,
+    build_user_role_matrix,
     build_gms_sensor_board,
     build_incident_control_profile,
     build_monitoring_interface_board,
@@ -41,9 +44,14 @@ from emergency_app.semiconductor import (
     describe_wind_direction,
     default_semiconductor_log,
     fetch_live_weather_snapshot,
+    get_role_permissions,
     get_checklist_name_for_incident,
     get_process_name_for_incident,
     get_taiwan_fab_sites,
+    load_user_accounts,
+    save_user_accounts,
+    set_user_active_status,
+    upsert_user_account,
 )
 
 
@@ -52,6 +60,7 @@ st.set_page_config(page_title="半导体应急指挥系统", layout="wide")
 ALOHA_OFFICIAL_URL = "https://www.epa.gov/cameo/aloha-software"
 OPEN_METEO_URL = "https://open-meteo.com/en/docs"
 CAMEO_CHEMICALS_URL = "https://cameochemicals.noaa.gov/"
+USER_ACCOUNTS_PATH = Path(__file__).resolve().parent / "data" / "semiconductor_users.json"
 
 ACTION_STATUS_LABELS = {
     "broadcast": "厂广播已启动",
@@ -971,7 +980,7 @@ def set_active_stage(stage_name: str, sender: str) -> None:
     add_log_entry("调度", sender, f"当前 BCM 阶段已切换至 {stage_name}。")
 
 
-def render_stage_action_bar(stage_order: list[str], active_stage: str, sender: str) -> None:
+def render_stage_action_bar(stage_order: list[str], active_stage: str, sender: str, *, allow_change: bool) -> None:
     st.markdown(
         """
         <div class="card-light" style="margin-bottom:1rem;">
@@ -985,7 +994,13 @@ def render_stage_action_bar(stage_order: list[str], active_stage: str, sender: s
     for index, stage_name in enumerate(stage_order):
         with columns[index]:
             button_type = "primary" if stage_name == active_stage else "secondary"
-            if st.button(stage_name, key=f"stage-bar-{stage_name}", use_container_width=True, type=button_type):
+            if st.button(
+                stage_name,
+                key=f"stage-bar-{stage_name}",
+                use_container_width=True,
+                type=button_type,
+                disabled=not allow_change,
+            ):
                 set_active_stage(stage_name, sender)
                 st.rerun()
 
@@ -1870,7 +1885,7 @@ def render_event_ticker(items: list[dict[str, str | bool]]) -> None:
     )
 
 
-def render_alert_cards(alerts: pd.DataFrame) -> None:
+def render_alert_cards(alerts: pd.DataFrame, *, allow_ack: bool) -> None:
     acked = set(st.session_state.get("semi_ack_alerts", []))
     visible = alerts[~alerts["告警ID"].isin(acked)]
     if visible.empty:
@@ -1893,18 +1908,165 @@ def render_alert_cards(alerts: pd.DataFrame) -> None:
                 unsafe_allow_html=True,
             )
         with col2:
-            if st.button("确认", key=f"ack-{row.告警ID}", use_container_width=True):
+            if st.button("确认", key=f"ack-{row.告警ID}", use_container_width=True, disabled=not allow_ack):
                 acked.add(row.告警ID)
                 st.session_state["semi_ack_alerts"] = sorted(acked)
                 add_action_feed("确认告警", f"{row.标题} 已由指挥席确认。")
                 st.rerun()
 
 
+def init_auth_state() -> None:
+    if "semi_authenticated_user" not in st.session_state:
+        st.session_state["semi_authenticated_user"] = None
+
+
+def render_login_gate() -> tuple[list[dict[str, str | bool]], dict[str, str | bool]]:
+    init_auth_state()
+    accounts = load_user_accounts(USER_ACCOUNTS_PATH)
+    current_user = st.session_state.get("semi_authenticated_user")
+    if current_user:
+        normalized = str(current_user["username"]).lower()
+        refreshed_user = next(
+            (
+                account
+                for account in accounts
+                if str(account["username"]).lower() == normalized and bool(account["active"])
+            ),
+            None,
+        )
+        if refreshed_user:
+            st.session_state["semi_authenticated_user"] = refreshed_user
+            return accounts, refreshed_user
+        st.session_state["semi_authenticated_user"] = None
+
+    st.markdown(
+        """
+        <div class="hero">
+          <div class="hero-kicker">User Access Control</div>
+          <div class="hero-title">半导体应急指挥系统登录</div>
+          <div class="hero-subtitle">系统已启用用户管理。请先登录后再进入指挥席、点名、ALOHA 和用户管理模块。</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    login_left, login_right = st.columns([0.72, 0.28])
+    with login_left:
+        st.markdown(
+            """
+            <div class="card-light">
+              <div class="section-title">登录</div>
+              <div class="section-subtitle">默认演示账号已启用，你也可以用管理员登录后在系统里继续新增角色与账号。</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        with st.form("semi-login"):
+            username = st.text_input("账号")
+            password = st.text_input("密码", type="password")
+            submitted = st.form_submit_button("登录", use_container_width=True)
+            if submitted:
+                matched_user = authenticate_user(accounts, username=username, password=password)
+                if matched_user:
+                    st.session_state["semi_authenticated_user"] = matched_user
+                    st.rerun()
+                st.error("账号或密码不正确，或该账号已被停用。")
+    with login_right:
+        st.markdown(
+            """
+            <div class="stage-card">
+              <div class="matrix-title">默认账号</div>
+              <div class="check-item"><strong>admin</strong> / Admin@2026</div>
+              <div class="check-item"><strong>commander</strong> / Commander@2026</div>
+              <div class="check-item"><strong>ehs</strong> / EHS@2026</div>
+              <div class="check-item"><strong>viewer</strong> / Viewer@2026</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    st.stop()
+
+
+def render_user_management_panel(
+    accounts: list[dict[str, str | bool]],
+    current_user: dict[str, str | bool],
+) -> list[dict[str, str | bool]]:
+    role = str(current_user["role"])
+    if "用户管理" not in get_role_permissions(role):
+        return accounts
+
+    st.markdown('<div class="sidebar-heading">用户管理</div>', unsafe_allow_html=True)
+    user_matrix = build_user_role_matrix(accounts)
+    st.dataframe(user_matrix, use_container_width=True, hide_index=True)
+
+    with st.expander("新增 / 更新账号", expanded=False):
+        with st.form("semi-user-upsert"):
+            username = st.text_input("账号名")
+            display_name = st.text_input("姓名 / 显示名")
+            user_role = st.selectbox("角色", ["系统管理员", "指挥官", "EHS值守", "观察员"])
+            password = st.text_input("密码", type="password")
+            active = st.toggle("启用账号", value=True)
+            submitted = st.form_submit_button("保存账号", use_container_width=True)
+            if submitted:
+                accounts = upsert_user_account(
+                    accounts,
+                    username=username,
+                    display_name=display_name,
+                    role=user_role,
+                    password=password or None,
+                    active=active,
+                )
+                save_user_accounts(USER_ACCOUNTS_PATH, accounts)
+                st.success("账号已保存。")
+                st.rerun()
+
+    with st.expander("启用 / 停用账号", expanded=False):
+        candidate_usernames = [str(account["username"]) for account in accounts if str(account["username"]) != str(current_user["username"])]
+        if not candidate_usernames:
+            st.caption("当前没有可调整状态的其他账号。")
+        else:
+            target_username = st.selectbox("选择账号", candidate_usernames)
+            active_choice = st.radio("账号状态", ["启用", "停用"], horizontal=True)
+            if st.button("更新账号状态", use_container_width=True):
+                accounts = set_user_active_status(accounts, target_username, active=(active_choice == "启用"))
+                save_user_accounts(USER_ACCOUNTS_PATH, accounts)
+                st.success("账号状态已更新。")
+                st.rerun()
+
+    return accounts
+
+
+user_accounts, authenticated_user = render_login_gate()
+current_role = str(authenticated_user["role"])
+current_permissions = set(get_role_permissions(current_role))
+can_edit_scene = "场景配置" in current_permissions
+can_run_commands = "指挥动作" in current_permissions
+can_edit_rollcall = "点名修正" in current_permissions
+can_write_logs = "通信记录" in current_permissions
+can_use_aloha = "ALOHA工作台" in current_permissions
+
+
 with st.sidebar:
+    permission_chips = "".join(f'<span class="sidebar-chip">{permission}</span>' for permission in current_permissions)
+    st.markdown(
+        f"""
+        <div class="sidebar-panel">
+          <div class="sidebar-heading">当前登录用户</div>
+          <div class="sidebar-title">{authenticated_user["display_name"]}</div>
+          <div class="sidebar-note">账号：{authenticated_user["username"]}</div>
+          <div class="sidebar-note">角色：{current_role}</div>
+          <div class="sidebar-chip-row">{permission_chips}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button("退出登录", use_container_width=True):
+        st.session_state["semi_authenticated_user"] = None
+        st.rerun()
+
     taiwan_fab_sites = get_taiwan_fab_sites()
-    fab_name = st.selectbox("应变厂区", list(taiwan_fab_sites.keys()), index=2)
+    fab_name = st.selectbox("应变厂区", list(taiwan_fab_sites.keys()), index=2, disabled=not can_edit_scene)
     site_profile = taiwan_fab_sites[fab_name]
-    incident_type = st.selectbox("事故类型", SEMICONDUCTOR_INCIDENT_TYPES, index=0)
+    incident_type = st.selectbox("事故类型", SEMICONDUCTOR_INCIDENT_TYPES, index=0, disabled=not can_edit_scene)
     profile = init_control_panel_state(fab_name=fab_name, incident_type=incident_type)
     mapped_checklist = get_checklist_name_for_incident(incident_type)
     mapped_process = get_process_name_for_incident(incident_type)
@@ -1923,20 +2085,29 @@ with st.sidebar:
         """,
         unsafe_allow_html=True,
     )
-    if st.button("重载当前场景模板", use_container_width=True):
+    if st.button("重载当前场景模板", use_container_width=True, disabled=not can_edit_scene):
         profile = init_control_panel_state(fab_name=fab_name, incident_type=incident_type, force=True)
         st.rerun()
 
     st.markdown('<div class="sidebar-heading">指挥信息</div>', unsafe_allow_html=True)
-    incident_name = st.text_input("事件名称", key="control_incident_name")
-    incident_area = st.text_input("事故区域", key="control_incident_area")
-    shift_name = st.selectbox("值班班次", ["白班", "中班", "夜班"], key="control_shift_name")
-    commander = st.text_input("值守总指挥", key="control_commander")
+    incident_name = st.text_input("事件名称", key="control_incident_name", disabled=not can_edit_scene)
+    incident_area = st.text_input("事故区域", key="control_incident_area", disabled=not can_edit_scene)
+    shift_name = st.selectbox("值班班次", ["白班", "中班", "夜班"], key="control_shift_name", disabled=not can_edit_scene)
+    commander = st.text_input("值守总指挥", key="control_commander", disabled=not can_edit_scene)
 
     st.markdown('<div class="sidebar-heading">人员与点名</div>', unsafe_allow_html=True)
-    exposed_people = int(st.number_input("涉险人数", min_value=0, step=8, key="control_exposed_people"))
+    exposed_people = int(
+        st.number_input("涉险人数", min_value=0, step=8, key="control_exposed_people", disabled=not can_edit_scene)
+    )
     inside_ratio = float(
-        st.slider("洁净室内点名占比", min_value=0.0, max_value=1.0, step=0.01, key="control_inside_ratio")
+        st.slider(
+            "洁净室内点名占比",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.01,
+            key="control_inside_ratio",
+            disabled=not can_edit_scene,
+        )
     )
     cleanroom_inside_due = int(round(exposed_people * inside_ratio))
     outdoor_assembly_due = max(0, int(exposed_people) - int(cleanroom_inside_due))
@@ -1981,19 +2152,44 @@ with st.sidebar:
     )
 
     with st.expander("高级场景参数", expanded=False):
-        severity = int(st.slider("事故严重度", min_value=1, max_value=5, key="control_severity"))
-        tool_impact_count = int(st.slider("受影响机台数", min_value=0, max_value=80, key="control_tool_impact_count"))
-        toxic_gas_risk = float(st.slider("毒气风险", min_value=0.0, max_value=1.0, step=0.05, key="control_toxic_gas_risk"))
+        severity = int(st.slider("事故严重度", min_value=1, max_value=5, key="control_severity", disabled=not can_edit_scene))
+        tool_impact_count = int(
+            st.slider("受影响机台数", min_value=0, max_value=80, key="control_tool_impact_count", disabled=not can_edit_scene)
+        )
+        toxic_gas_risk = float(
+            st.slider("毒气风险", min_value=0.0, max_value=1.0, step=0.05, key="control_toxic_gas_risk", disabled=not can_edit_scene)
+        )
         contamination_risk = float(
-            st.slider("洁净污染风险", min_value=0.0, max_value=1.0, step=0.05, key="control_contamination_risk")
+            st.slider(
+                "洁净污染风险",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                key="control_contamination_risk",
+                disabled=not can_edit_scene,
+            )
         )
         utility_failure = float(
-            st.slider("厂务异常程度", min_value=0.0, max_value=1.0, step=0.05, key="control_utility_failure")
+            st.slider(
+                "厂务异常程度",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                key="control_utility_failure",
+                disabled=not can_edit_scene,
+            )
         )
         cleanroom_recovery_progress = float(
-            st.slider("洁净恢复进度", min_value=0.0, max_value=1.0, step=0.01, key="control_cleanroom_recovery_progress")
+            st.slider(
+                "洁净恢复进度",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.01,
+                key="control_cleanroom_recovery_progress",
+                disabled=not can_edit_scene,
+            )
         )
-        mes_disrupted = st.toggle("MES/告警链路受扰", key="control_mes_disrupted")
+        mes_disrupted = st.toggle("MES/告警链路受扰", key="control_mes_disrupted", disabled=not can_edit_scene)
 
     if "control_severity" not in st.session_state:
         apply_control_profile(profile)
@@ -2020,6 +2216,7 @@ with st.sidebar:
     if auto_refresh:
         st_autorefresh(interval=20_000, key="semi-refresh")
     st_autorefresh(interval=12_000, key="semi-live-events-refresh")
+    user_accounts = render_user_management_panel(user_accounts, authenticated_user)
 
 
 score = calculate_semiconductor_risk_score(
@@ -2254,7 +2451,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-render_stage_action_bar(stage_order, active_stage=active_stage, sender=commander)
+render_stage_action_bar(stage_order, active_stage=active_stage, sender=commander, allow_change=can_run_commands)
 
 trigger_cols = st.columns(4)
 with trigger_cols[0]:
@@ -2322,7 +2519,7 @@ with overview_tab:
                 f"{incident_area} 已启动厂广播，请各区域依 {incident_type} 预案执行。",
                 commander,
                 button_key="cmd-broadcast",
-                disabled="broadcast" in enabled_actions,
+                disabled=(not can_run_commands) or ("broadcast" in enabled_actions),
             )
         with action_cols[1]:
             render_command_button(
@@ -2332,7 +2529,7 @@ with overview_tab:
                 f"已开放 {fab_name} 事故区域画面供跨厂支援席查看。",
                 commander,
                 button_key="cmd-cross-fab-cctv",
-                disabled="cross_fab_cctv" in enabled_actions,
+                disabled=(not can_run_commands) or ("cross_fab_cctv" in enabled_actions),
             )
         with action_cols[2]:
             render_command_button(
@@ -2342,7 +2539,7 @@ with overview_tab:
                 f"已指派 EHS 根据风向与源项对 {incident_type} 进行下风向扩散模拟。",
                 commander,
                 button_key="cmd-aloha",
-                disabled="aloha" in enabled_actions,
+                disabled=(not can_run_commands) or ("aloha" in enabled_actions),
             )
         action_cols_2 = st.columns(3)
         with action_cols_2[0]:
@@ -2353,7 +2550,7 @@ with overview_tab:
                 "已通知厂外支援与跨厂 ERT 待命。",
                 commander,
                 button_key="cmd-external-support",
-                disabled="external_support" in enabled_actions,
+                disabled=(not can_run_commands) or ("external_support" in enabled_actions),
             )
         with action_cols_2[1]:
             render_command_button(
@@ -2363,10 +2560,10 @@ with overview_tab:
                 "已冻结高风险 Bay 批次与相关载具流转。",
                 commander,
                 button_key="cmd-wip-lock",
-                disabled="wip_lock" in enabled_actions,
+                disabled=(not can_run_commands) or ("wip_lock" in enabled_actions),
             )
         with action_cols_2[2]:
-            if st.button("升级阶段", use_container_width=True):
+            if st.button("升级阶段", use_container_width=True, disabled=not can_run_commands):
                 stage_order = bcm_stage_board["阶段"].tolist()
                 current_index = stage_order.index(st.session_state["semi_current_stage"])
                 if current_index < len(stage_order) - 1:
@@ -2382,7 +2579,7 @@ with overview_tab:
                 f"{incident_area} 已切换到火警联动检查模式，复核探测器、回路与防排烟状态。",
                 commander,
                 button_key="cmd-fire-linkage",
-                disabled="fire_linkage" in enabled_actions,
+                disabled=(not can_run_commands) or ("fire_linkage" in enabled_actions),
             )
         with action_cols_3[1]:
             render_command_button(
@@ -2392,7 +2589,7 @@ with overview_tab:
                 f"已指派 EHS 对 {incident_area} 的 GMS 点位执行二次复测，并复核报警位置。",
                 commander,
                 button_key="cmd-gms-recheck",
-                disabled="gms_recheck" in enabled_actions,
+                disabled=(not can_run_commands) or ("gms_recheck" in enabled_actions),
             )
         with action_cols_3[2]:
             render_command_button(
@@ -2402,7 +2599,7 @@ with overview_tab:
                 "已要求班组长、安保和门禁席同步执行洁净室内外二次点名。",
                 commander,
                 button_key="cmd-rollcall-muster",
-                disabled="rollcall_muster" in enabled_actions,
+                disabled=(not can_run_commands) or ("rollcall_muster" in enabled_actions),
             )
         action_cols_4 = st.columns(2)
         with action_cols_4[0]:
@@ -2413,7 +2610,7 @@ with overview_tab:
                 f"已对 {incident_area} 周边关键公辅执行隔离，降低扩散与次生风险。",
                 commander,
                 button_key="cmd-facility-isolation",
-                disabled="facility_isolation" in enabled_actions,
+                disabled=(not can_run_commands) or ("facility_isolation" in enabled_actions),
             )
         with action_cols_4[1]:
             render_command_button(
@@ -2423,7 +2620,7 @@ with overview_tab:
                 f"已向管理层、制造、设备与供应链发出 {incident_type} 事故快报。",
                 commander,
                 button_key="cmd-incident-briefing",
-                disabled="incident_briefing" in enabled_actions,
+                disabled=(not can_run_commands) or ("incident_briefing" in enabled_actions),
             )
 
         render_section_head("实时气象与外部工具", "把现实风场、ALOHA 官方工具和化学数据库挂到同一处，避免值班席来回切换。")
@@ -2459,7 +2656,7 @@ with overview_tab:
         st.plotly_chart(fig, use_container_width=True)
 
         render_section_head("待确认告警", "告警需要由指挥席确认、分派责任方并推进动作。")
-        render_alert_cards(alert_board)
+        render_alert_cards(alert_board, allow_ack=can_run_commands)
 
         render_timeline_panel(timeline)
 
@@ -2489,17 +2686,31 @@ with incident_tab:
     with right:
         render_section_head("点名修正", "允许值班人员手动修正区域点名结果，并保留动作轨迹。")
         with st.form("rollcall-update"):
-            zone = st.selectbox("选择区域", rollcall_board["区域"].tolist())
+            zone = st.selectbox("选择区域", rollcall_board["区域"].tolist(), disabled=not can_edit_rollcall)
             current_row = rollcall_board[rollcall_board["区域"] == zone].iloc[0]
-            arrived = st.number_input("已到人数", min_value=0, max_value=int(current_row["应到"]), value=int(current_row["已到"]))
-            observe = st.number_input("医疗观察人数", min_value=0, max_value=int(arrived), value=int(current_row["医疗观察"]))
-            submitted = st.form_submit_button("更新点名", use_container_width=True)
+            arrived = st.number_input(
+                "已到人数",
+                min_value=0,
+                max_value=int(current_row["应到"]),
+                value=int(current_row["已到"]),
+                disabled=not can_edit_rollcall,
+            )
+            observe = st.number_input(
+                "医疗观察人数",
+                min_value=0,
+                max_value=int(arrived),
+                value=int(current_row["医疗观察"]),
+                disabled=not can_edit_rollcall,
+            )
+            submitted = st.form_submit_button("更新点名", use_container_width=True, disabled=not can_edit_rollcall)
             if submitted:
                 overrides = dict(st.session_state.get("semi_rollcall_overrides", {}))
                 overrides[zone] = {"arrived": int(arrived), "observe": int(observe)}
                 st.session_state["semi_rollcall_overrides"] = overrides
                 trigger_command_action("rollcall_update", "更新点名结果", f"{zone} 已更新为已到 {arrived} 人、医疗观察 {observe} 人。", commander)
                 st.rerun()
+        if not can_edit_rollcall:
+            st.info("当前账号没有点名修正权限，可查看点名闭环状态但不能修改结果。")
         render_section_head("badge / 门禁对账", "把 badge、承包商、访客和交接班名单纳入点名系统，贴近台湾 fab 实务。")
         render_audit_cards(badge_audit_board)
         indoor_missing = int(rollcall_board[rollcall_board["类型"] == "洁净室内"]["失联"].sum())
@@ -2558,10 +2769,26 @@ with aloha_tab:
         chemical_options = ["氯气", "氨气", "氢氟酸", "盐酸蒸气", "硅烷", "异丙醇蒸气"]
         if st.session_state.get("semi_aloha_chemical") not in chemical_options:
             st.session_state["semi_aloha_chemical"] = chemical_options[0]
-        aloha_chemical = st.selectbox("化学品", chemical_options, key="semi_aloha_chemical")
-        release_rate_kg_min = st.slider("泄漏速率 (kg/min)", min_value=0.1, max_value=20.0, value=4.5, step=0.1)
-        duration_min = st.slider("泄漏持续时间 (min)", min_value=1, max_value=60, value=15, step=1)
-        use_live_weather = st.toggle("使用实时气象填充 ALOHA 快速推估", value=weather_online)
+        aloha_chemical = st.selectbox("化学品", chemical_options, key="semi_aloha_chemical", disabled=not can_use_aloha)
+        release_rate_kg_min = st.slider(
+            "泄漏速率 (kg/min)",
+            min_value=0.1,
+            max_value=20.0,
+            value=4.5,
+            step=0.1,
+            disabled=not can_use_aloha,
+        )
+        duration_min = st.slider(
+            "泄漏持续时间 (min)",
+            min_value=1,
+            max_value=60,
+            value=15,
+            step=1,
+            disabled=not can_use_aloha,
+        )
+        use_live_weather = st.toggle("使用实时气象填充 ALOHA 快速推估", value=weather_online, disabled=not can_use_aloha)
+        if not can_use_aloha:
+            st.info("当前账号没有 ALOHA 工作台操作权限，系统已切换为只读查看模式。")
         if use_live_weather:
             wind_speed_for_estimate = live_wind_speed
             temperature_for_estimate = live_temperature
@@ -2573,11 +2800,32 @@ with aloha_tab:
         else:
             weather_cols = st.columns(3)
             with weather_cols[0]:
-                wind_speed_for_estimate = st.number_input("风速 (m/s)", min_value=0.1, max_value=30.0, value=live_wind_speed, step=0.1)
+                wind_speed_for_estimate = st.number_input(
+                    "风速 (m/s)",
+                    min_value=0.1,
+                    max_value=30.0,
+                    value=live_wind_speed,
+                    step=0.1,
+                    disabled=not can_use_aloha,
+                )
             with weather_cols[1]:
-                temperature_for_estimate = st.number_input("气温 (°C)", min_value=-20.0, max_value=60.0, value=live_temperature, step=0.5)
+                temperature_for_estimate = st.number_input(
+                    "气温 (°C)",
+                    min_value=-20.0,
+                    max_value=60.0,
+                    value=live_temperature,
+                    step=0.5,
+                    disabled=not can_use_aloha,
+                )
             with weather_cols[2]:
-                humidity_for_estimate = st.number_input("湿度 (%)", min_value=1.0, max_value=100.0, value=live_humidity, step=1.0)
+                humidity_for_estimate = st.number_input(
+                    "湿度 (%)",
+                    min_value=1.0,
+                    max_value=100.0,
+                    value=live_humidity,
+                    step=1.0,
+                    disabled=not can_use_aloha,
+                )
 
         aloha_estimate = build_aloha_quick_estimate(
             chemical_name=aloha_chemical,
@@ -2657,9 +2905,19 @@ with comms_tab:
 
     render_section_head("新增播报", "建议所有播报都包含区域、状态、动作和下一次更新时间。")
     with st.form("semi-add-log", clear_on_submit=True):
-        category = st.selectbox("日志类别", ["接警", "调度", "环境回报", "厂务回报", "设备回报", "生产回报"])
-        sender = st.text_input("发送方", value=commander)
-        content = st.text_area("播报内容", placeholder="例如：A栋气柜已切断，Sub-Fab 排风维持，受影响批次已冻结，下一次复测 10 分钟后回报。")
-        submitted = st.form_submit_button("写入日志", use_container_width=True)
+        category = st.selectbox(
+            "日志类别",
+            ["接警", "调度", "环境回报", "厂务回报", "设备回报", "生产回报"],
+            disabled=not can_write_logs,
+        )
+        sender = st.text_input("发送方", value=commander, disabled=not can_write_logs)
+        content = st.text_area(
+            "播报内容",
+            placeholder="例如：A栋气柜已切断，Sub-Fab 排风维持，受影响批次已冻结，下一次复测 10 分钟后回报。",
+            disabled=not can_write_logs,
+        )
+        submitted = st.form_submit_button("写入日志", use_container_width=True, disabled=not can_write_logs)
         if submitted:
             add_log_entry(category=category, sender=sender, content=content)
+    if not can_write_logs:
+        st.info("当前账号没有通信记录权限，可查看日志但不能新增播报。")
