@@ -915,8 +915,8 @@ def normalize_single_account_accounts(accounts: list[dict[str, str | bool]]) -> 
     )
     if existing:
         default_account["display_name"] = str(existing.get("display_name") or PRIMARY_ACCOUNT_DISPLAY_NAME)
-        default_account["password_hash"] = str(existing.get("password_hash") or default_account["password_hash"])
-        default_account["active"] = bool(existing.get("active", True))
+    default_account["password_hash"] = hash_user_password(PRIMARY_ACCOUNT_PASSWORD)
+    default_account["active"] = True
     return [default_account]
 
 

@@ -119,6 +119,24 @@ def test_save_user_accounts_roundtrip_keeps_single_primary_account(tmp_path: Pat
     assert str(reloaded[0]["username"]) == "admin"
 
 
+def test_load_user_accounts_resets_stale_primary_password_and_status(tmp_path: Path) -> None:
+    accounts_path = tmp_path / "users.json"
+    stale_accounts = [
+        {
+            "username": "admin",
+            "display_name": "旧值守",
+            "role": "系统管理员",
+            "password_hash": hash_user_password("OldPassword#2026"),
+            "active": False,
+        }
+    ]
+    save_user_accounts(accounts_path, stale_accounts)
+    reloaded = load_user_accounts(accounts_path)
+    assert reloaded[0]["display_name"] == "旧值守"
+    assert bool(reloaded[0]["active"]) is True
+    assert authenticate_user(reloaded, username="admin", password="ERCCommand#2026!") is not None
+
+
 def test_build_user_role_matrix_contains_permissions_column() -> None:
     matrix = build_user_role_matrix(build_default_user_accounts())
     assert list(matrix.columns) == ["账号", "姓名", "角色", "状态", "权限"]
