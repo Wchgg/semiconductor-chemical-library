@@ -909,10 +909,10 @@ def hash_user_password(password: str) -> str:
 def build_default_user_accounts() -> list[dict[str, str | bool]]:
     defaults: list[dict[str, str | bool]] = []
     seed_passwords = {
-        "admin": "Admin@2026",
-        "commander": "Commander@2026",
-        "ehs": "EHS@2026",
-        "viewer": "Viewer@2026",
+        "admin": "ERCAdmin#2026!",
+        "commander": "ERCCommander#2026!",
+        "ehs": "ERCEHS#2026!",
+        "viewer": "ERCViewer#2026!",
     }
     for account in DEFAULT_USER_ACCOUNTS:
         defaults.append(

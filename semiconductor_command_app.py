@@ -1974,11 +1974,10 @@ def render_login_gate() -> tuple[list[dict[str, str | bool]], dict[str, str | bo
         st.markdown(
             """
             <div class="stage-card">
-              <div class="matrix-title">默认账号</div>
-              <div class="check-item"><strong>admin</strong> / Admin@2026</div>
-              <div class="check-item"><strong>commander</strong> / Commander@2026</div>
-              <div class="check-item"><strong>ehs</strong> / EHS@2026</div>
-              <div class="check-item"><strong>viewer</strong> / Viewer@2026</div>
+              <div class="matrix-title">访问说明</div>
+              <div class="check-item"><strong>访问方式：</strong>请使用已分配的系统账号登录。</div>
+              <div class="check-item"><strong>账号申请：</strong>如需新增、停用或重置账号，请联系系统管理员。</div>
+              <div class="check-item"><strong>安全提醒：</strong>页面不再展示默认账号和密码。</div>
             </div>
             """,
             unsafe_allow_html=True,

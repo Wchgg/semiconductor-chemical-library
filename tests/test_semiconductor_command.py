@@ -63,8 +63,8 @@ def test_classify_semiconductor_response_level_thresholds() -> None:
 
 
 def test_hash_user_password_is_stable() -> None:
-    assert hash_user_password("Admin@2026") == hash_user_password("Admin@2026")
-    assert hash_user_password("Admin@2026") != hash_user_password("Viewer@2026")
+    assert hash_user_password("ERCAdmin#2026!") == hash_user_password("ERCAdmin#2026!")
+    assert hash_user_password("ERCAdmin#2026!") != hash_user_password("ERCViewer#2026!")
 
 
 def test_load_user_accounts_creates_defaults(tmp_path: Path) -> None:
@@ -76,14 +76,14 @@ def test_load_user_accounts_creates_defaults(tmp_path: Path) -> None:
 
 def test_authenticate_user_accepts_active_account() -> None:
     accounts = build_default_user_accounts()
-    user = authenticate_user(accounts, username="admin", password="Admin@2026")
+    user = authenticate_user(accounts, username="admin", password="ERCAdmin#2026!")
     assert user is not None
     assert user["role"] == "系统管理员"
 
 
 def test_authenticate_user_rejects_inactive_account() -> None:
     accounts = set_user_active_status(build_default_user_accounts(), "admin", active=False)
-    user = authenticate_user(accounts, username="admin", password="Admin@2026")
+    user = authenticate_user(accounts, username="admin", password="ERCAdmin#2026!")
     assert user is None
 
 
