@@ -1916,68 +1916,13 @@ def init_auth_state() -> None:
 
 
 def render_login_gate() -> tuple[list[dict[str, str | bool]], dict[str, str | bool]]:
-    init_auth_state()
-    accounts = load_user_accounts(USER_ACCOUNTS_PATH)
-    current_user = st.session_state.get("semi_authenticated_user")
-    if current_user:
-        normalized = str(current_user["username"]).lower()
-        refreshed_user = next(
-            (
-                account
-                for account in accounts
-                if str(account["username"]).lower() == normalized and bool(account["active"])
-            ),
-            None,
-        )
-        if refreshed_user:
-            st.session_state["semi_authenticated_user"] = refreshed_user
-            return accounts, refreshed_user
-        st.session_state["semi_authenticated_user"] = None
-
-    st.markdown(
-        """
-        <div class="hero">
-          <div class="hero-kicker">Single Account Access</div>
-          <div class="hero-title">半导体应急指挥系统登录</div>
-          <div class="hero-subtitle">系统当前使用单账号登录。请先输入授权账号和密码，再进入指挥席、点名、ALOHA 和通信模块。</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    login_left, login_right = st.columns([0.72, 0.28])
-    with login_left:
-        st.markdown(
-            """
-            <div class="card-light">
-              <div class="section-title">登录</div>
-              <div class="section-subtitle">当前系统只保留一个授权账号，页面不会展示账号密码。</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        with st.form("semi-login"):
-            username = st.text_input("账号")
-            password = st.text_input("密码", type="password")
-            submitted = st.form_submit_button("登录", use_container_width=True)
-            if submitted:
-                matched_user = authenticate_user(accounts, username=username, password=password)
-                if matched_user:
-                    st.session_state["semi_authenticated_user"] = matched_user
-                    st.rerun()
-                st.error("账号或密码不正确，或该账号已被停用。")
-    with login_right:
-        st.markdown(
-            """
-            <div class="stage-card">
-              <div class="matrix-title">访问说明</div>
-              <div class="check-item"><strong>访问方式：</strong>请使用已分配的系统账号登录。</div>
-              <div class="check-item"><strong>账号申请：</strong>如需新增、停用或重置账号，请联系系统管理员。</div>
-              <div class="check-item"><strong>安全提醒：</strong>页面不再展示默认账号和密码。</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    st.stop()
+    current_user = {
+        "username": "system",
+        "display_name": "系统指挥席",
+        "role": "系统管理员",
+        "active": True,
+    }
+    return [current_user], current_user
 
 
 def render_user_management_panel(
@@ -1998,23 +1943,6 @@ can_use_aloha = "ALOHA工作台" in current_permissions
 
 
 with st.sidebar:
-    permission_chips = "".join(f'<span class="sidebar-chip">{permission}</span>' for permission in current_permissions)
-    st.markdown(
-        f"""
-        <div class="sidebar-panel">
-          <div class="sidebar-heading">当前登录用户</div>
-          <div class="sidebar-title">{authenticated_user["display_name"]}</div>
-          <div class="sidebar-note">账号：{authenticated_user["username"]}</div>
-          <div class="sidebar-note">角色：{current_role}</div>
-          <div class="sidebar-chip-row">{permission_chips}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if st.button("退出登录", use_container_width=True):
-        st.session_state["semi_authenticated_user"] = None
-        st.rerun()
-
     taiwan_fab_sites = get_taiwan_fab_sites()
     fab_name = st.selectbox("应变厂区", list(taiwan_fab_sites.keys()), index=2, disabled=not can_edit_scene)
     site_profile = taiwan_fab_sites[fab_name]
@@ -2168,7 +2096,6 @@ with st.sidebar:
     if auto_refresh:
         st_autorefresh(interval=20_000, key="semi-refresh")
     st_autorefresh(interval=12_000, key="semi-live-events-refresh")
-    user_accounts = render_user_management_panel(user_accounts, authenticated_user)
 
 
 score = calculate_semiconductor_risk_score(
